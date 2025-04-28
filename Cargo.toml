@@ -1,0 +1,7 @@
+[workspace]
+members = [ 
+  "example",
+  "wire",
+  "wire-build",
+]
+resolver = "2"
