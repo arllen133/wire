@@ -21,7 +21,6 @@ pub fn injectable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut inject_params = Vec::new();
     let mut struct_fields = Vec::new();
-    // 遍历结构体字段
     for field in &mut ast.fields {
         // 过滤字段属性，检查是否有`inject`
         let is_inject = field
@@ -29,7 +28,7 @@ pub fn injectable(_attr: TokenStream, item: TokenStream) -> TokenStream {
             .iter()
             .any(|attr| attr.path().is_ident("inject"));
         let name = field.ident.as_ref().unwrap();
-        let ty = field.ty.clone();
+        let ty = &field.ty;
         if is_inject {
             // 移除 field 中的 #[inject]
             field.attrs.retain(|attr| !attr.path().is_ident("inject"));
