@@ -437,6 +437,9 @@ impl ModuleContext {
         let prefix = if let Some(absolute_path) = self.uses.get(first_segment) {
             // replace use alias and concat absolute type path
             absolute_path[..absolute_path.len() - 1].join("::")
+        } else if segments.len() > 1 {
+            // more then one segment, as abs path
+            segments.join("::")
         } else {
             // default in current module
             self.module_path()
@@ -622,7 +625,7 @@ fn build_ident(name: &str) -> proc_macro2::Ident {
 
 fn is_absolute_path(segments: &Vec<String>) -> bool {
     if let Some(seg) = segments.first() {
-        seg == "crate"
+        seg == "crate" || seg == ""
     } else {
         false
     }
