@@ -429,22 +429,27 @@ impl ModuleContext {
             .map(|seg| seg.ident.to_string())
             .collect();
 
+        let trait_type = segments.join("::");
         if is_absolute_path(&segments) {
-            return segments.join("::");
+            return trait_type;
         }
 
         let first_segment = segments.first().unwrap();
         let prefix = if let Some(absolute_path) = self.uses.get(first_segment) {
             // replace use alias and concat absolute type path
-            absolute_path[..absolute_path.len() - 1].join("::")
+            Some(absolute_path[..absolute_path.len() - 1].join("::"))
         } else if segments.len() > 1 {
             // more then one segment, as abs path
-            segments.join("::")
+            None
         } else {
             // default in current module
-            self.module_path()
+            Some(self.module_path())
         };
-        format!("{}::{}", prefix, segments.join("::"))
+        if let Some(prefix) = prefix {
+            format!("{}::{}", prefix, trait_type)
+        } else {
+            trait_type
+        }
     }
 
     fn parse_inject_field_type(&self, mut inject: Inject, field_type: &Type) -> Option<Inject> {
