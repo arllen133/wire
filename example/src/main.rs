@@ -1,10 +1,10 @@
-use example::account::infra::security::bcrypt_hasher::BcryptHasherConfig;
 use example::wire;
 
 fn main() {
-    let cfg = wire::Config {
-        bcrypt: BcryptHasherConfig::default(),
+    let dep = wire::Dependency {
+        config: wire::Config::default(),
+        connection: example::account::infra::security::bcrypt_hasher::Connection {},
     };
-    let _ctx = wire::ServiceContext::new(&cfg);
+    wire::ServiceContext::new(&dep);
     println!("Hello, world!");
 }

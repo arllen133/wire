@@ -9,6 +9,9 @@ pub struct BcryptHasherConfig {
     pub cost: u32,
 }
 
+#[derive(Clone)]
+pub struct Connection {}
+
 #[provider]
 #[injectable]
 pub struct BcryptHasher {
@@ -16,6 +19,9 @@ pub struct BcryptHasher {
     // cost: i32,
     #[inject]
     cfg: BcryptHasherConfig,
+
+    #[inject(manual)]
+    conn: Connection,
 }
 
 #[provider]

@@ -13,11 +13,12 @@ pub fn configure() -> Builder {
         out_dir: None,
         out_file: None,
         dir: None,
+        dep: build_ident("dep"),
         variants: RefCell::new(HashMap::new()),
         injectors: Vec::new(),
         providers: HashMap::new(),
         implements: HashMap::new(),
-        exports: RefCell::new(HashMap::new()),
+        dependencies: RefCell::new(Vec::new()),
     }
 }
 
@@ -25,11 +26,12 @@ pub struct Builder {
     pub(crate) out_dir: Option<PathBuf>,
     pub(crate) out_file: Option<String>,
     pub(crate) dir: Option<String>,
-    variants: RefCell<HashMap<String, proc_macro2::Ident>>,
+    dep: proc_macro2::Ident,
+    variants: RefCell<HashMap<String, Variant>>,
     injectors: Vec<Provider>,
     providers: HashMap<String, Provider>,
     implements: HashMap<String, Vec<String>>,
-    exports: RefCell<HashMap<proc_macro2::Ident, String>>,
+    dependencies: RefCell<Vec<Dep>>,
 }
 
 impl Builder {
@@ -43,10 +45,6 @@ impl Builder {
 
         self
     }
-    // pub fn dir(mut self, dir: String) -> Self {
-    //     self.dir = Some(dir);
-    //     self
-    // }
 
     pub fn build(mut self) {
         self.setup();
@@ -114,10 +112,10 @@ impl Builder {
             .values()
             .filter_map(|provider| {
                 if let Some(name) = provider.metadata.config.as_ref() {
-                    let field_name = syn::Ident::new(name.as_str(), proc_macro2::Span::call_site());
+                    let field_name = build_ident(name.as_str());
                     let field_type: syn::Path = syn::parse_str(&provider.struct_type).unwrap();
                     Some(quote! {
-                        pub #field_name: #field_type,
+                        pub #field_name: #field_type
                     })
                 } else {
                     None
@@ -147,25 +145,41 @@ impl Builder {
             })
             .collect();
 
-        let args: Vec<_> = self.exports.borrow().keys().map(|v| v.clone()).collect();
-        let fields: Vec<_> = self
-            .exports
+        let mut args = Vec::new();
+        let mut fields = Vec::new();
+        let variants = self.variants.borrow();
+        variants.iter().for_each(|(k, v)| {
+            if v.export {
+                let ident = &v.ident;
+                args.push(ident);
+                let field_type: syn::Path = syn::parse_str(k).unwrap();
+                fields.push(quote! {
+                    pub #ident: #field_type,
+                });
+            }
+        });
+
+        // build dependencies
+        let deps: Vec<_> = self
+            .dependencies
             .borrow()
             .iter()
-            .map(|(k, v)| {
-                let field_type: syn::Path = syn::parse_str(v).unwrap();
-                quote! {
-                    pub #k: #field_type,
-                }
-            })
+            .map(|dep| dep.build_field())
             .collect();
+
+        let dep = &self.dep;
         quote! {
+            pub struct Dependency {
+                pub config: Config,
+
+                #(#deps),*
+            }
             pub struct ServiceContext{
                 #(#fields)*
             }
 
             impl ServiceContext{
-                pub fn new(cfg: &Config) -> Self {
+                pub fn new(#dep: &Dependency) -> Self {
                     #(#injectors)*;
 
                     Self{
@@ -175,29 +189,54 @@ impl Builder {
             }
         }
     }
+    fn extract_struct_type(&self, inject: &Inject) -> Option<String> {
+        if inject.trait_object {
+            if let Some(struct_types) = self.implements.get(&inject.struct_type) {
+                Some(struct_types.first().unwrap().clone())
+            } else {
+                None
+            }
+        } else if self.providers.contains_key(&inject.struct_type) {
+            Some(inject.struct_type.clone())
+        } else {
+            None
+        }
+    }
     fn build_provider(&self, provider: &Provider) -> (TokenStream, TokenStream) {
+        eprintln!("building provider: {:?}", provider);
         // create provider deps
         let mut deps: Vec<TokenStream> = Vec::new();
         let args: Vec<_> = provider
             .injects
             .iter()
-            .map(|field| {
-                // find struct define type
-                let struct_type = if let Some(struct_types) = self.implements.get(field) {
-                    struct_types.first().unwrap_or_else(|| field)
-                } else {
-                    field
-                };
+            .map(|inject| {
+                // check dep if provided
+                let struct_type = self.extract_struct_type(&inject);
+                let provided = struct_type.is_some();
 
+                // provider not found
+                if !provided && !inject.manual {
+                    panic!("provider missing for '{}'", &inject.struct_type)
+                }
+
+                // provider manual inject provider
+                if !provided && inject.manual {
+                    let dep = inject.build_dep();
+                    let param = dep.build_param(&self.dep);
+                    self.dependencies.borrow_mut().push(dep);
+                    return param;
+                }
+
+                // find struct define type
+                let struct_type = &struct_type.unwrap();
                 // build from cache
                 if let Some(variant) = self.variants.borrow().get(struct_type) {
-                    return quote! {#variant.clone()};
+                    let ident = variant.ident.clone();
+                    return quote! {#ident.clone()};
                 }
 
                 // cache missing, build from struct
-                let provider = self.providers.get(struct_type).expect(&format!(
-                    "provider '{struct_type}' not found, from field '{field}'"
-                ));
+                let provider = self.providers.get(struct_type).unwrap();
                 let (dep, variant) = self.build_provider(provider);
                 deps.push(dep);
                 quote! {#variant.clone()}
@@ -206,26 +245,26 @@ impl Builder {
 
         // config provider
         if let Some(name) = provider.metadata.config.as_ref() {
-            let mut parts = vec!["cfg"];
+            let mut parts = vec!["config"];
             parts.extend(name.split('.'));
-            let ident_parts: Vec<_> = parts
-                .into_iter()
-                .map(|part| syn::Ident::new(part, proc_macro2::Span::call_site()))
-                .collect();
-            return (quote! {}, quote! {#(#ident_parts).*});
+            let ident_parts: Vec<_> = parts.into_iter().map(build_ident).collect();
+            let dep = &self.dep;
+            return (quote! {}, quote! {#dep.#(#ident_parts).*});
         }
-        let variant = proc_macro2::Ident::new(
-            &format!("{}", provider.ident.to_snake_case()),
-            proc_macro2::Span::call_site(),
+
+        let name = if let Some(name) = provider.metadata.rename.as_ref() {
+            name.clone()
+        } else {
+            provider.ident.to_snake_case()
+        };
+        let ident = build_ident(name.as_str());
+        self.variants.borrow_mut().insert(
+            provider.struct_type.clone(),
+            Variant {
+                ident: ident.clone(),
+                export: provider.metadata.export,
+            },
         );
-        self.variants
-            .borrow_mut()
-            .insert(provider.struct_type.clone(), variant.clone());
-        if provider.metadata.export {
-            self.exports
-                .borrow_mut()
-                .insert(variant.clone(), provider.struct_type.clone());
-        }
         let path: syn::Path = parse_str(&provider.struct_type).expect(&format!(
             "failed parse struct type '{}' to path",
             &provider.struct_type
@@ -233,20 +272,21 @@ impl Builder {
         eprintln!("build provider: {:?}", provider);
         let assign = if provider.metadata.export {
             quote! {
-                let #variant = #path::new(#(#args),*);
+                let #ident = #path::new(#(#args),*);
             }
         } else {
             quote! {
-                let #variant = std::sync::Arc::new(#path::new(#(#args),*));
+                let #ident = std::sync::Arc::new(#path::new(#(#args),*));
             }
         };
+        eprintln!("build provider '{}' success", provider.ident.to_string());
         (
             quote! {
                 #(#deps)*
 
                 #assign
             },
-            quote! {#variant},
+            quote! {#ident},
         )
     }
 }
@@ -301,6 +341,7 @@ fn parse_module(mods: Vec<String>, items: Vec<syn::Item>) -> Vec<ModuleContext> 
 struct Metadata {
     config: Option<String>,
     export: bool,
+    rename: Option<String>,
 }
 
 #[derive(Debug)]
@@ -308,7 +349,7 @@ struct Provider {
     struct_type: String,
     ident: String,
     metadata: Metadata,
-    injects: Vec<String>,
+    injects: Vec<Inject>,
 }
 
 impl Provider {
@@ -336,7 +377,18 @@ impl Provider {
                 }
             }
             if meta.path.is_ident("export") {
-                self.metadata.export = true
+                self.metadata.export = true;
+            }
+            if meta.path.is_ident("rename") {
+                if meta.input.peek(token::Paren) {
+                    let content;
+                    parenthesized!(content in meta.input);
+                    let lit: syn::LitStr = content.parse().expect(&format!(
+                        "failed parse attr 'rename' content in provider '{}'",
+                        self.struct_type
+                    ));
+                    self.metadata.rename = Some(lit.value());
+                }
             }
 
             Ok(())
@@ -392,27 +444,32 @@ impl ModuleContext {
         format!("{}::{}", prefix, segments.join("::"))
     }
 
-    fn extract_field_path(&self, field_type: &Type) -> Option<Path> {
+    fn parse_inject_field_type(&self, mut inject: Inject, field_type: &Type) -> Option<Inject> {
         match field_type {
             Type::Path(type_path) => {
                 // parse last segment type
                 let segment = type_path.path.segments.last().unwrap();
-                if segment.ident == "Arc" || segment.ident == "Box" {
+                if segment.ident == "Arc" {
+                    inject.wrapper_type = Some(self.resolve_abs_path_type(&type_path.path));
                     if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                         if let Some(syn::GenericArgument::Type(inner_type)) = args.args.first() {
-                            return self.extract_field_path(inner_type);
+                            return self.parse_inject_field_type(inject, inner_type);
                         }
                     }
                 }
 
-                Some(type_path.path.clone())
+                inject.struct_type = self.resolve_abs_path_type(&type_path.path);
+                Some(inject)
             }
             Type::TraitObject(trait_obj) => {
                 // parse first TraitBound
                 if let Some(syn::TypeParamBound::Trait(trait_bound)) = trait_obj.bounds.first() {
-                    return Some(trait_bound.path.clone());
+                    inject.struct_type = self.resolve_abs_path_type(&trait_bound.path);
+                    inject.trait_object = true;
+                    Some(inject)
+                } else {
+                    None
                 }
-                return None;
             }
             _ => None,
         }
@@ -434,18 +491,17 @@ impl ModuleContext {
             .fields
             .iter()
             .filter_map(|field| {
-                if !has_attr(&field.attrs, "inject") {
-                    return None;
+                if let Some(attr) = get_attr(&field.attrs, "inject") {
+                    // parse struct field type
+                    // support field type:
+                    // 1. Trait Object: dyn Bound, Box<dyn Trait>
+                    // 2. Struct
+                    let mut inject = Inject::default();
+                    inject.parse_attr(&attr);
+                    self.parse_inject_field_type(inject, &field.ty)
+                } else {
+                    None
                 }
-
-                // parse struct field type
-                // support field type:
-                // 1. Trait Object: dyn Bound, Box<dyn Trait>
-                // 2. Struct
-                let field_type_path = self
-                    .extract_field_path(&field.ty)
-                    .expect(&format!("failed parse field type '{:?}'", field.ident));
-                Some(self.resolve_abs_path_type(&field_type_path))
             })
             .collect();
 
@@ -531,16 +587,12 @@ fn parse_use_tree(tree: &UseTree, mut prefix: Vec<String>) -> Vec<(String, Vec<S
 }
 
 fn parse_file_path(path: &std::path::Path) -> Vec<String> {
-    // 1. 确保路径在 src 目录下
     if !path.starts_with("src") {
         return vec![];
     }
-
-    // 2. 剥离 src/ 前缀和 .rs 后缀
     let path_buf = path.with_extension("");
     let stem = path_buf.to_str().unwrap();
 
-    // 3. 处理特殊文件名 mod.rs
     stem.split('/')
         .filter_map(|v| match v {
             "src" => Some("crate".to_string()),
@@ -564,10 +616,88 @@ fn get_attr(attrs: &[syn::Attribute], name: &str) -> Option<syn::Attribute> {
     None
 }
 
+fn build_ident(name: &str) -> proc_macro2::Ident {
+    syn::Ident::new(name, proc_macro2::Span::call_site())
+}
+
 fn is_absolute_path(segments: &Vec<String>) -> bool {
     if let Some(seg) = segments.first() {
         seg == "crate"
     } else {
         false
+    }
+}
+
+struct Variant {
+    ident: proc_macro2::Ident,
+    export: bool,
+}
+
+struct Dep {
+    ident: proc_macro2::Ident,
+    path: syn::Path,
+    trait_object: bool,
+    wrapper_type: Option<String>,
+}
+
+impl Dep {
+    fn build_param(&self, dep: &proc_macro2::Ident) -> TokenStream {
+        let ident = &self.ident;
+        quote! {#dep.#ident.clone()}
+    }
+    fn build_field(&self) -> TokenStream {
+        let ident = &self.ident;
+        let path = &self.path;
+        if let Some(v) = self.wrapper_type.as_ref() {
+            let wrapper_type: syn::Path = syn::parse_str(v).unwrap();
+            if self.trait_object {
+                quote! {pub #ident: #wrapper_type<dyn #path>}
+            } else {
+                quote! {pub #ident: #wrapper_type<#path>}
+            }
+        } else {
+            quote! {pub #ident: #path}
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct Inject {
+    trait_object: bool,
+    wrapper_type: Option<String>,
+    struct_type: String,
+    manual: bool,
+}
+
+impl Inject {
+    fn parse_attr(&mut self, attr: &syn::Attribute) {
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("manual") {
+                self.manual = true
+            }
+
+            Ok(())
+        });
+    }
+
+    fn build_dep(&self) -> Dep {
+        let path: syn::Path = syn::parse_str(&self.struct_type)
+            .expect(&format!("parse struct type failed, {}", self.struct_type));
+        let ident = build_ident(
+            path.segments
+                .last()
+                .as_ref()
+                .unwrap()
+                .ident
+                .to_string()
+                .to_snake_case()
+                .as_str(),
+        );
+        Dep {
+            ident: ident.clone(),
+            path,
+            trait_object: self.trait_object,
+            wrapper_type: self.wrapper_type.clone(),
+        }
     }
 }
