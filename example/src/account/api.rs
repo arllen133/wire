@@ -3,7 +3,7 @@ use wire::injectable;
 
 use crate::account::domain::security::PasswordHasher;
 
-#[injectable(export)]
+#[injectable(export("account_grpc_service"))]
 pub struct AccountGrpcServer {
     #[inject]
     password_hasher: Arc<dyn PasswordHasher>,

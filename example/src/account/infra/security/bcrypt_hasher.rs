@@ -1,4 +1,4 @@
-use wire::{config, injectable, provider};
+use wire::{injectable, provider};
 
 use crate::account::domain::security::PasswordHasher;
 use std::io::Result;

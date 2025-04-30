@@ -90,7 +90,7 @@ impl Builder {
     }
 
     fn format<T: AsRef<OsStr>>(&self, command: T) {
-        // 调用 rustfmt 格式化生成的代码
+        // rustfmt format code
         let status = std::process::Command::new("rustfmt")
             .arg(command)
             .status()
@@ -195,7 +195,9 @@ impl Builder {
                 }
 
                 // cache missing, build from struct
-                let provider = self.providers.get(struct_type).unwrap();
+                let provider = self.providers.get(struct_type).expect(&format!(
+                    "provider '{struct_type}' not found, from field '{field}'"
+                ));
                 let (dep, variant) = self.build_provider(provider);
                 deps.push(dep);
                 quote! {#variant.clone()}
@@ -224,8 +226,10 @@ impl Builder {
                 .borrow_mut()
                 .insert(variant.clone(), provider.struct_type.clone());
         }
-        let path: syn::Path =
-            parse_str(&provider.struct_type).expect("failed parse struct type to path");
+        let path: syn::Path = parse_str(&provider.struct_type).expect(&format!(
+            "failed parse struct type '{}' to path",
+            &provider.struct_type
+        ));
         eprintln!("build provider: {:?}", provider);
         let assign = if provider.metadata.export {
             quote! {
@@ -257,8 +261,10 @@ fn walk_dir(dir: &str) -> Vec<ModuleContext> {
             modules.append(walk_dir(path.to_str().unwrap()).as_mut());
         } else if path.extension().map_or(false, |ext| ext == "rs") {
             let mods = parse_file_path(path.as_path());
-            let content = std::fs::read_to_string(&path).unwrap();
-            let ast = syn::parse_file(&content).unwrap();
+            let content = std::fs::read_to_string(&path)
+                .expect(&format!("failed read file '{}'", path.display()));
+            let ast = syn::parse_file(&content)
+                .expect(&format!("failed parse file '{}'", path.display()));
             modules.append(parse_module(mods, ast.items).as_mut());
         }
     }
@@ -320,7 +326,10 @@ impl Provider {
                 if meta.input.peek(token::Paren) {
                     let content;
                     parenthesized!(content in meta.input);
-                    let lit: syn::LitStr = content.parse().unwrap();
+                    let lit: syn::LitStr = content.parse().expect(&format!(
+                        "failed parse attr 'config' content in provider '{}'",
+                        self.struct_type
+                    ));
                     self.metadata.config = Some(lit.value());
                 } else {
                     self.metadata.config = Some(self.ident.to_snake_case());
@@ -360,7 +369,8 @@ impl ModuleContext {
     fn abs_struct_or_trait_type(&self, ident: String) -> String {
         format!("{}::{}", self.module_path(), ident)
     }
-    fn resolve_prefix_path_type(&self, trait_path: &Path) -> String {
+
+    fn resolve_abs_path_type(&self, trait_path: &Path) -> String {
         let segments: Vec<String> = trait_path
             .segments
             .iter()
@@ -368,23 +378,18 @@ impl ModuleContext {
             .collect();
 
         if is_absolute_path(&segments) {
-            return segments[..segments.len() - 1].join("::");
+            return segments.join("::");
         }
 
         let first_segment = segments.first().unwrap();
-        if let Some(absolute_path) = self.uses.get(first_segment) {
+        let prefix = if let Some(absolute_path) = self.uses.get(first_segment) {
             // replace use alias and concat absolute type path
             absolute_path[..absolute_path.len() - 1].join("::")
         } else {
             // default in current module
             self.module_path()
-        }
-    }
-
-    fn resolve_abs_path_type(&self, trait_path: &Path) -> String {
-        let prefix = self.resolve_prefix_path_type(trait_path);
-        let segment = trait_path.segments.last().unwrap();
-        format!("{}::{}", prefix, segment.ident.to_string())
+        };
+        format!("{}::{}", prefix, segments.join("::"))
     }
 
     fn extract_field_path(&self, field_type: &Type) -> Option<Path> {
@@ -437,7 +442,9 @@ impl ModuleContext {
                 // support field type:
                 // 1. Trait Object: dyn Bound, Box<dyn Trait>
                 // 2. Struct
-                let field_type_path = self.extract_field_path(&field.ty).unwrap();
+                let field_type_path = self
+                    .extract_field_path(&field.ty)
+                    .expect(&format!("failed parse field type '{:?}'", field.ident));
                 Some(self.resolve_abs_path_type(&field_type_path))
             })
             .collect();
