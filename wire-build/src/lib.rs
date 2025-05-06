@@ -124,7 +124,7 @@ impl Builder {
             .collect();
 
         quote! {
-            #[derive(Debug, Clone, Default)]
+            #[derive(Debug, Clone, Default, serde::Deserialize)]
             pub struct Config {
                 #(#fields),*
             }

@@ -1,10 +1,11 @@
 use wire::{injectable, provider};
 
 use crate::account::domain::security::PasswordHasher;
+use serde::Deserialize;
 use std::io::Result;
 
 #[provider(config("bcrypt"))]
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct BcryptHasherConfig {
     pub cost: u32,
 }
@@ -12,11 +13,10 @@ pub struct BcryptHasherConfig {
 #[derive(Clone)]
 pub struct Connection {}
 
+#[allow(dead_code)]
 #[provider]
 #[injectable]
 pub struct BcryptHasher {
-    // #[inject(cfg.default=12)]
-    // cost: i32,
     #[inject]
     cfg: BcryptHasherConfig,
 
