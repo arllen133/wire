@@ -17,7 +17,7 @@ pub fn injectable(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut ast = parse_macro_input!(item as ItemStruct);
     let ident = &ast.ident;
     let (impl_generics, ty_generics, where_clause) = ast.generics.split_for_impl();
-    ast.attrs.retain(|attr| !attr.path().is_ident("injector"));
+    ast.attrs.retain(|attr| !attr.path().is_ident("injectable"));
 
     let mut inject_params = Vec::new();
     let mut struct_fields = Vec::new();
