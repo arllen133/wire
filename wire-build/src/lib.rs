@@ -131,6 +131,32 @@ impl Builder {
         }
     }
 
+    fn generate_dependencies(&self) -> TokenStream {
+        let mut dedup = HashMap::new();
+        let deps: Vec<_> = self
+            .dependencies
+            .borrow()
+            .iter()
+            .filter_map(|dep| {
+                let field_name = dep.ident.to_string();
+                if dedup.contains_key(&field_name) {
+                    None
+                } else {
+                    dedup.insert(field_name, true);
+                    Some(dep.build_field())
+                }
+            })
+            .collect();
+
+        quote! {
+            pub struct Dependency {
+                pub config: Config,
+
+                #(#deps),*
+            }
+        }
+    }
+
     fn generate(&mut self) -> TokenStream {
         let injectors: Vec<_> = self
             .injectors
@@ -160,20 +186,12 @@ impl Builder {
         });
 
         // build dependencies
-        let deps: Vec<_> = self
-            .dependencies
-            .borrow()
-            .iter()
-            .map(|dep| dep.build_field())
-            .collect();
+        let dependency = self.generate_dependencies();
 
         let dep = &self.dep;
         quote! {
-            pub struct Dependency {
-                pub config: Config,
+            #dependency
 
-                #(#deps),*
-            }
             pub struct ServiceContext{
                 #(#fields)*
             }
